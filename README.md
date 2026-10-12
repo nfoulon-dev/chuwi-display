@@ -1,7 +1,6 @@
-# chuwi-fold
+# chuwi-display
 
-Everything needed to make a CHUWI MiniBook X behave like a convertible on
-Fedora, in one command:
+Everything display related for the CHUWI MiniBook X, on Fedora, in one command:
 
 - **Panel**: the BIOS drives this 1200x1920 DSI panel at 50 Hz and it is mounted
   rotated 270 degrees. The Video BIOS Table is patched to drive it at 90 Hz and
@@ -13,6 +12,9 @@ Fedora, in one command:
 - **Hardware video decode**: Fedora does not ship Intel's iHD media driver (it
   lives in RPM Fusion because of codec patents), so this enables RPM Fusion,
   installs `intel-media-driver` and turns VA-API on in Firefox.
+
+The panel, the fold handling and video decode all describe the built-in display,
+which is why this is one repository rather than three.
 
 Everything needed is in this repository: the forked driver source is vendored
 in [iio-sensor-proxy/](iio-sensor-proxy), the patched VBT ships as
@@ -32,8 +34,8 @@ libinput 1.31.3, kernel 7.2.9. The installer is tested end to end in clean
 ## Install
 
 ```
-git clone https://github.com/nfoulon-dev/chuwi-fold.git
-cd chuwi-fold
+git clone https://github.com/nfoulon-dev/chuwi-display.git
+cd chuwi-display
 ./install
 ```
 
@@ -151,7 +153,7 @@ to come from the kernel rather than from firmware that never set it.
 
 The panel half also edits `/etc/default/grub`, the kernel command line (through
 `grubby`) and `~/.config/monitors.xml`, keeping a copy of each in
-`/root/chuwi-fold-backups/<timestamp>/` first.
+`/root/chuwi-display-backups/<timestamp>/` first.
 
 ## Uninstall
 
@@ -223,7 +225,7 @@ you prefer to manage the driver yourself.
 
 | Path | What |
 | --- | --- |
-| `iio-sensor-proxy/` | the driver source: a fork of iio-sensor-proxy with the dual-accelerometer hinge driver, **GPL-3.0-or-later** (see its `COPYING`) |
+| `iio-sensor-proxy/` | the driver source: a fork of iio-sensor-proxy with the dual-accelerometer hinge driver, **GPL-3.0-or-later** (see its `COPYING`); its own README and RELEASE.md are upstream's |
 | `patches/` | the fork's changes as a patch, for upstreaming |
 | `assets/vbt` | the patched Video BIOS Table, extracted from this machine and patched to 90 Hz |
 | `files/` | configs installed verbatim: units, drop-in, udev rule, SELinux policy, rotation daemon |

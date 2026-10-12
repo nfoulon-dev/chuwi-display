@@ -1,6 +1,6 @@
 [Unit]
 Description=Keep the MiniBook X panel in landscape when unfolded
-Documentation=https://github.com/nfoulon-dev/chuwi-fold
+Documentation=https://github.com/nfoulon-dev/chuwi-display
 PartOf=graphical-session.target
 After=graphical-session.target
 

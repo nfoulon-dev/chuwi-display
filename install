@@ -193,15 +193,25 @@ with 'git -C ${dir} pull --ff-only'."
   done
 }
 
+source_matches_build() {
+  local build="$1"
+  local dir="$2"
+
+  if [[ ! -f "${build}/build.ninja" ]]; then
+    return 1
+  fi
+  [[ "$(cat "${build}/.source-path" 2>/dev/null)" == "${dir}" ]]
+}
+
 build_binary() {
   local dir
   local user
   local build
   local binary
 
-  dir="$(source_dir)/iio-sensor-proxy"
+  dir="$(readlink -f "$(source_dir)/iio-sensor-proxy")"
   user="$(target_user)"
-  build="$(target_home)/.cache/chuwi-fold/build"
+  build="$(target_home)/.cache/chuwi-display/build"
   binary="${build}/src/iio-sensor-proxy"
   if [[ ! -d "${dir}" ]]; then
     die "no iio-sensor-proxy source in ${dir}"
@@ -209,13 +219,14 @@ build_binary() {
   if ! grep -q MXC6655_NO_PANEL_COMPENSATION "${dir}/src/drv-mxc6655-accel.c"; then
     die "${dir} does not carry this fork's driver changes"
   fi
-  if [[ ! -f "${build}/build.ninja" ]]; then
+  if ! source_matches_build "${build}" "${dir}"; then
     log "configuring the iio-sensor-proxy build in ${build}"
     rm -rf "${build}"
     install -d -o "${user}" -g "$(id -gn "${user}")" "$(dirname "${build}")"
     if ! as_user "${user}" meson setup "${build}" "${dir}"; then
       die "meson setup failed, see ${build}/meson-logs/meson-log.txt"
     fi
+    printf '%s\n' "${dir}" >"${build}/.source-path"
   fi
   log "building iio-sensor-proxy"
   if ! as_user "${user}" ninja -C "${build}"; then

@@ -15,11 +15,11 @@ uninstall:
 
 # Exercises the file placement without touching the running system.
 test:
-	rm -rf /tmp/chuwi-fold-test
+	rm -rf /tmp/chuwi-display-test
 	IIO_BINARY="$$(pwd)/files/minibook-rotation-fix.py" \
-		DESTDIR=/tmp/chuwi-fold-test ./install
-	find /tmp/chuwi-fold-test -type f -o -type l | sort | sed "s|/tmp/chuwi-fold-test||"
-	rm -rf /tmp/chuwi-fold-test
+		DESTDIR=/tmp/chuwi-display-test ./install
+	find /tmp/chuwi-display-test -type f -o -type l | sort | sed "s|/tmp/chuwi-display-test||"
+	rm -rf /tmp/chuwi-display-test
 
 clean:
-	rm -rf /tmp/chuwi-fold-test
+	rm -rf /tmp/chuwi-display-test
