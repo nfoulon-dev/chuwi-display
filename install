@@ -18,8 +18,11 @@
 # Usage: ./install            (elevates itself with sudo)
 #        DESTDIR=/tmp/x ./install   install into a prefix, no system changes
 #
+# The forked driver source is vendored in iio-sensor-proxy/, so nothing is
+# cloned: everything needed is in this repository except the Fedora packages.
+#
 # Environment:
-#   CHUWI_MINIBOOK  existing checkout of fstanis/chuwi-minibook to use
+#   CHUWI_MINIBOOK  build the driver from this checkout instead of the vendored one
 #   IIO_BINARY      prebuilt iio-sensor-proxy binary, skips source and build
 
 set -euo pipefail
@@ -51,7 +54,6 @@ readonly USER_UNIT_PATH=/etc/systemd/user/minibook-rotation-fix.service
 readonly USER_UNIT_WANTS=/etc/systemd/user/graphical-session.target.wants
 readonly POLICY_DIR=/usr/local/share/minibook
 
-readonly UPSTREAM_REPO=https://github.com/fstanis/chuwi-minibook.git
 readonly BUILD_DEPS=(
   meson ninja-build glib2-devel libdrm-devel polkit-devel systemd-devel
   libgudev-devel pkgconf-pkg-config gcc systemd git checkpolicy
@@ -148,56 +150,32 @@ source_dir() {
     echo "${CHUWI_MINIBOOK}"
     return
   fi
-  echo "$(target_home)/.local/src/chuwi-minibook"
+  echo "${SCRIPT_DIR}"
 }
 
-fetch_source() {
+prepare_source() {
   local dir
-  local user
 
   dir="$(source_dir)"
-  user="$(target_user)"
-  if [[ -d "${dir}/.git" ]]; then
-    update_source "${dir}" "${user}"
+  if [[ -z "${CHUWI_MINIBOOK:-}" ]]; then
+    log "using the forked driver source bundled in this repository"
     return
   fi
-  if [[ -n "${IIO_BINARY}" ]]; then
-    return
+  if [[ ! -d "${dir}/iio-sensor-proxy" ]]; then
+    die "${dir} does not contain an iio-sensor-proxy directory"
   fi
-  log "cloning ${UPSTREAM_REPO} to ${dir}"
-  install -d -o "${user}" -g "${user}" "$(dirname "${dir}")"
-  as_user "${user}" git clone --depth 1 "${UPSTREAM_REPO}" "${dir}"
-}
-
-update_source() {
-  local dir="$1"
-  local user="$2"
-
-  if [[ -n "${IIO_BINARY}" ]]; then
-    return
-  fi
-  if [[ -n "${CHUWI_MINIBOOK:-}" ]]; then
-    log "using the checkout at ${dir} as given, not updating it"
-    return
-  fi
-  if [[ "${WITH_UPDATES}" -eq 0 ]]; then
-    log "using the existing checkout ${dir} (--no-update)"
-    return
-  fi
-  log "updating ${dir} to the latest upstream"
-  as_user "${user}" git -C "${dir}" fetch --depth 1 origin
-  as_user "${user}" git -C "${dir}" reset --hard FETCH_HEAD
+  log "using the checkout at ${dir} as given, not modifying it"
+  apply_patches "${dir}"
 }
 
 apply_patches() {
-  local dir
+  local dir="$1"
   local patch
   local user
 
-  dir="$(source_dir)"
   user="$(target_user)"
   if [[ ! -d "${dir}/.git" ]]; then
-    return
+    die "${dir} is not a git checkout, cannot apply the driver patches"
   fi
   for patch in "${PATCHES_DIR}"/*.patch; do
     if as_user "${user}" git -C "${dir}" apply --check "${patch}" 2>/dev/null; then
@@ -223,14 +201,18 @@ build_binary() {
 
   dir="$(source_dir)/iio-sensor-proxy"
   user="$(target_user)"
-  build="${dir}/_build"
+  build="$(target_home)/.cache/chuwi-fold/build"
   binary="${build}/src/iio-sensor-proxy"
   if [[ ! -d "${dir}" ]]; then
     die "no iio-sensor-proxy source in ${dir}"
   fi
+  if ! grep -q MXC6655_NO_PANEL_COMPENSATION "${dir}/src/drv-mxc6655-accel.c"; then
+    die "${dir} does not carry this fork's driver changes"
+  fi
   if [[ ! -f "${build}/build.ninja" ]]; then
     log "configuring the iio-sensor-proxy build in ${build}"
     rm -rf "${build}"
+    install -d -o "${user}" -g "$(id -gn "${user}")" "$(dirname "${build}")"
     if ! as_user "${user}" meson setup "${build}" "${dir}"; then
       die "meson setup failed, see ${build}/meson-logs/meson-log.txt"
     fi
@@ -472,11 +454,11 @@ Usage: ./install [--hz N] [--keep-grub-menu] [--no-panel-fixes] [--no-vaapi] [--
   --no-panel-fixes   install only the fold stack, leave the panel alone
   --no-vaapi         do not set up hardware video decode
   --no-firefox       do not write the Firefox VA-API preferences
-  --no-update        do not fetch the latest upstream source or update the
-                     packages this needs; use what is already installed
+  --no-update        do not update the packages this needs; use what is
+                     already installed
 
 Environment:
-  CHUWI_MINIBOOK  existing checkout of fstanis/chuwi-minibook to use
+  CHUWI_MINIBOOK  build the driver from this checkout instead of the vendored one
   IIO_BINARY      prebuilt iio-sensor-proxy binary, skip the source and build
   DESTDIR         install into a prefix, make no system changes
 EOF
@@ -530,8 +512,7 @@ main() {
   elevate "$@"
   require_fedora
   install_build_deps
-  fetch_source
-  apply_patches
+  prepare_source
   install_panel_fixes
   if [[ -n "${IIO_BINARY}" ]]; then
     binary="${IIO_BINARY}"

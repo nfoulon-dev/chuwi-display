@@ -8,7 +8,8 @@
 # This enables RPM Fusion, installs intel-media-driver and libva-utils, and
 # turns VA-API on in Firefox by writing user.js for every profile.
 #
-# Adapted from nfoulon-dev's minibook-fix scripts.
+# Follows the setup used on this machine: RPM Fusion for the Intel iHD driver
+# and the Firefox preferences that keep decode on the GPU.
 #
 # Usage: sudo tools/vaapi.sh [--no-driver] [--no-firefox]
 #        tools/vaapi.sh --check   exit 0 when everything is in place

@@ -9,8 +9,8 @@
 # tells i915 the panel orientation, so Plymouth, GDM, GNOME and the VT consoles
 # come up upright.
 #
-# The Fedora procedure is adapted from nfoulon-dev's minibook-fix scripts, on
-# top of the VBT patcher from fstanis/chuwi-minibook.
+# The procedure is the one worked out on this machine under Fedora 44, on top
+# of the VBT patcher from fstanis/chuwi-minibook (vendored next to this script).
 #
 # Usage: sudo tools/panel_fixes.sh [--hz N] [--keep-grub-menu]
 #        tools/panel_fixes.sh --check   exit 0 when already configured
@@ -25,14 +25,18 @@ readonly PATCHER="${SCRIPT_DIR}/vbt_patch.py"
 readonly VBT_DEST=/lib/firmware/vbt
 readonly DRACUT_CONF=/etc/dracut.conf.d/minibook-vbt.conf
 readonly GRUB=/etc/default/grub
-readonly BACKUPS=/root/minibook-fix-backups
+readonly BACKUPS=/root/chuwi-fold-backups
+readonly BUNDLED_VBT="${SCRIPT_DIR}/../assets/vbt"
+PANEL_HZ="${PANEL_HZ:-90}"
+PANEL_CONN="${PANEL_CONN:-DSI-1}"
+PANEL_ORIENTATION="${PANEL_ORIENTATION:-right_side_up}"
+FBCON_ROTATE="${FBCON_ROTATE:-1}"
+readonly PANEL_HZ PANEL_CONN PANEL_ORIENTATION FBCON_ROTATE
 readonly PANEL_ARGS=(
   "i915.vbt_firmware=vbt"
-  "video=DSI-1:panel_orientation=right_side_up"
-  "fbcon=rotate:1"
+  "video=${PANEL_CONN}:panel_orientation=${PANEL_ORIENTATION}"
+  "fbcon=rotate:${FBCON_ROTATE}"
 )
-
-PANEL_HZ="${PANEL_HZ:-90}"
 KEEP_GRUB_MENU=0
 MODE=apply
 
@@ -50,6 +54,9 @@ Usage: sudo $0 [--hz N] [--keep-grub-menu]
        sudo $0 --revert
 
   --hz N             refresh rate to patch into the VBT (default ${PANEL_HZ})
+                     PANEL_CONN, PANEL_ORIENTATION and FBCON_ROTATE override the
+                     connector, rotation direction and console rotation
+                     (defaults ${PANEL_CONN}, ${PANEL_ORIENTATION}, ${FBCON_ROTATE})
   --keep-grub-menu   do not hide the boot menu (its text cannot be rotated)
   --check            report whether the fixes are configured, change nothing
   --revert           undo everything this script applied
@@ -138,7 +145,13 @@ patch_vbt() {
   local scratch
 
   if ! source="$(locate_vbt)"; then
-    return 1
+    if [[ ! -f "${BUNDLED_VBT}" ]]; then
+      return 1
+    fi
+    warn "cannot read the running VBT, using the copy bundled in this repo"
+    install -m 644 "${BUNDLED_VBT}" "${VBT_DEST}"
+    log "installed the bundled VBT to ${VBT_DEST}"
+    return 0
   fi
   scratch="$(mktemp)"
   cat "${source}" >"${scratch}"
