@@ -34,6 +34,8 @@ BUILD_BINARY=""
 
 PANEL_HZ="${PANEL_HZ:-90}"
 WITH_PANEL_FIXES=1
+WITH_VAAPI=1
+WITH_FIREFOX=1
 KEEP_GRUB_MENU=0
 
 readonly BINARY=/usr/local/libexec/iio-sensor-proxy
@@ -219,6 +221,24 @@ panel_args_configured() {
   "${SCRIPT_DIR}/tools/panel_fixes.sh" --check >/dev/null 2>&1
 }
 
+install_vaapi() {
+  local options=()
+
+  if [[ -n "${DESTDIR}" ]]; then
+    log "DESTDIR set, skipping the video decode setup"
+    return
+  fi
+  if [[ "${WITH_VAAPI}" -eq 0 ]]; then
+    log "video decode setup disabled with --no-vaapi"
+    return
+  fi
+  if [[ "${WITH_FIREFOX}" -eq 0 ]]; then
+    options+=(--no-firefox)
+  fi
+  "${SCRIPT_DIR}/tools/vaapi.sh" ${options[@]+"${options[@]}"} \
+    || warn "video decode setup failed, playback just stays on the CPU"
+}
+
 install_panel_fixes() {
   local panel_options=()
 
@@ -393,11 +413,13 @@ summary() {
 
 usage() {
   cat <<EOF
-Usage: ./install [--hz N] [--keep-grub-menu] [--no-panel-fixes]
+Usage: ./install [--hz N] [--keep-grub-menu] [--no-panel-fixes] [--no-vaapi]
 
   --hz N             panel refresh rate to patch into the VBT (default ${PANEL_HZ})
   --keep-grub-menu   do not hide the boot menu (its text cannot be rotated)
   --no-panel-fixes   install only the fold stack, leave the panel alone
+  --no-vaapi         do not set up hardware video decode
+  --no-firefox       do not write the Firefox VA-API preferences
 
 Environment:
   CHUWI_MINIBOOK  existing checkout of fstanis/chuwi-minibook to use
@@ -423,6 +445,14 @@ parse_args() {
       ;;
     --no-panel-fixes)
       WITH_PANEL_FIXES=0
+      shift
+      ;;
+    --no-vaapi)
+      WITH_VAAPI=0
+      shift
+      ;;
+    --no-firefox)
+      WITH_FIREFOX=0
       shift
       ;;
     -h | --help)
@@ -456,6 +486,7 @@ main() {
   install_user_files
   reload_services
   health_check
+  install_vaapi
   summary
 }
 

@@ -10,6 +10,9 @@ Fedora, in one command:
 - **Fold / tablet mode**: fold the display back past 185 degrees -- fully folded
   *or* in tent mode -- and the internal keyboard and touchpad are suspended.
   Unfold, and they come back with the panel already back in landscape.
+- **Hardware video decode**: Fedora does not ship Intel's iHD media driver (it
+  lives in RPM Fusion because of codec patents), so this enables RPM Fusion,
+  installs `intel-media-driver` and turns VA-API on in Firefox.
 
 Both halves are installed together because neither is much use alone: the kernel
 supplying `panel_orientation` is what makes mutter land in portrait when tablet
@@ -51,6 +54,8 @@ fold feature works either way.
 | `--hz N` | refresh rate to patch into the VBT (default 90, try `60` if 90 shows artifacts) |
 | `--keep-grub-menu` | leave the boot menu visible; GRUB cannot rotate its text, so it stays sideways |
 | `--no-panel-fixes` | install only the fold half |
+| `--no-vaapi` | do not set up hardware video decode |
+| `--no-firefox` | do not write the Firefox VA-API preferences |
 
 Environment overrides: `CHUWI_MINIBOOK=/path/to/checkout` to reuse an existing
 clone, `IIO_BINARY=/path/to/iio-sensor-proxy` to skip the source and build,
@@ -106,6 +111,9 @@ to come from the kernel rather than from firmware that never set it.
 | SELinux module `minibook_iio_sensor_proxy` | lets the confined service read both i2c accelerometers, DRM and uinput |
 | `~/.local/bin/minibook-rotation-fix.py` | landscape daemon |
 | `~/.config/systemd/user/minibook-rotation-fix.service` | starts it with the session |
+| RPM Fusion release packages | repository holding the Intel media driver |
+| `intel-media-driver`, `libva-utils` | hardware decode driver, and `vainfo` to check it |
+| `<firefox profile>/user.js` | enables VA-API decode in Firefox |
 
 The panel half also edits `/etc/default/grub`, the kernel command line (through
 `grubby`) and `~/.config/monitors.xml`, keeping a copy of each in
@@ -120,7 +128,27 @@ The panel half also edits `/etc/default/grub`, the kernel command line (through
 
 It removes the files above, drops the SELinux module, reverts the panel settings
 and reinstalls the distribution's `iio-sensor-proxy`. A reboot puts the panel
-back to stock; without one, folding is already inert.
+back to stock; without one, folding is already inert. The video decode packages
+are left in place, since they are useful on their own and harmless.
+
+## Hardware video decode
+
+Fedora ships no Intel iHD driver, so VA-API falls back to software decode unless
+RPM Fusion is enabled and `intel-media-driver` is installed; the Firefox
+preferences (`media.ffmpeg.vaapi.enabled`, `media.hardware-video-decoding.enabled`)
+are written into each profile's `user.js`, which Firefox reapplies on every
+launch. `intel-media-driver` is also what puts the driver at
+`/usr/lib64/dri-nonfree/iHD_drv_video.so`.
+
+```
+tools/vaapi.sh --check     # is it all in place?
+sudo tools/vaapi.sh        # driver and Firefox preferences
+vainfo                     # supported profiles and entrypoints
+```
+
+If no Firefox profile exists yet, start Firefox once and re-run to pick up the
+preferences. `sudo dnf install -y intel-media-driver` on its own is also fine if
+you prefer to manage the driver yourself.
 
 ## Troubleshooting
 
@@ -144,7 +172,8 @@ The dual-accelerometer driver is the fork by
 [fstanis/chuwi-minibook](https://github.com/fstanis/chuwi-minibook), built on
 [iio-sensor-proxy](https://gitlab.freedesktop.org/hadess/iio-sensor-proxy). The
 Fedora panel procedure comes from nfoulon-dev's `minibook-fix` scripts, and
-`tools/vbt_patch.py` is a port of the VBT patcher in chuwi-minibook.
+`tools/vbt_patch.py` is a port of the VBT patcher in chuwi-minibook, and the
+panel and video decode procedures come from the same minibook-fix scripts.
 
 ## License
 
