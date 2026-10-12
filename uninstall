@@ -16,7 +16,10 @@ readonly UDEV_RULE=/etc/udev/rules.d/70-minibook-rotation-fix.rules
 readonly SELINUX_MODULE=minibook_iio_sensor_proxy
 readonly USER_DAEMON=minibook-rotation-fix.py
 readonly USER_UNIT=minibook-rotation-fix.service
-readonly USER_DATA_DIR=.local/share/minibook
+readonly USER_BIN=/usr/local/bin/minibook-rotation-fix.py
+readonly USER_UNIT_PATH=/etc/systemd/user/minibook-rotation-fix.service
+readonly USER_UNIT_WANTS=/etc/systemd/user/graphical-session.target.wants
+readonly POLICY_DIR=/usr/local/share/minibook
 
 WITH_PANEL_FIXES=1
 
@@ -65,7 +68,7 @@ stop_user_service() {
     return
   fi
   log "stopping the rotation daemon"
-  sudo -u "${user}" XDG_RUNTIME_DIR="${runtime}" systemctl --user disable --now \
+  sudo -u "${user}" XDG_RUNTIME_DIR="${runtime}" systemctl --user stop \
     "${USER_UNIT}" \
     || warn "could not stop ${USER_UNIT}"
 }
@@ -89,17 +92,26 @@ remove_selinux_module() {
   semanage fcontext -d "${BINARY}" 2>/dev/null || true
 }
 
-remove_user_files() {
+remove_session_files() {
   local home
+  local reload_runtime
 
   home="$(target_home)"
-  if [[ -z "${home}" ]]; then
-    return
+  log "removing the rotation daemon"
+  rm -f "${USER_BIN}" "${USER_UNIT_PATH}"
+  rm -f "${USER_UNIT_WANTS}/${USER_UNIT}"
+  rm -rf "${POLICY_DIR}"
+  if [[ -n "${home}" ]]; then
+    rm -f "${home}/.local/bin/${USER_DAEMON}"
+    rm -f "${home}/.config/systemd/user/${USER_UNIT}"
+    rm -f "${home}/.config/systemd/user/graphical-session.target.wants/${USER_UNIT}"
+    rm -rf "${home}/.local/share/minibook"
   fi
-  log "removing user files"
-  rm -f "${home}/.local/bin/${USER_DAEMON}"
-  rm -f "${home}/.config/systemd/user/${USER_UNIT}"
-  rm -rf "${home}/${USER_DATA_DIR}"
+  reload_runtime="/run/user/$(id -u "$(target_user)" 2>/dev/null || echo 0)"
+  if [[ -d "${reload_runtime}" ]]; then
+    sudo -u "$(target_user)" XDG_RUNTIME_DIR="${reload_runtime}" \
+      systemctl --user daemon-reload || true
+  fi
 }
 
 restore_package() {
@@ -163,7 +175,7 @@ main() {
   stop_user_service
   remove_system_files
   remove_selinux_module
-  remove_user_files
+  remove_session_files
   revert_panel_fixes
   restore_package
   log "done, keyboard and touchpad are no longer affected by folding"

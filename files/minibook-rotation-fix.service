@@ -1,11 +1,12 @@
 [Unit]
 Description=Keep the MiniBook X panel in landscape when unfolded
+Documentation=https://github.com/nfoulon-dev/chuwi-fold
 PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/minibook-rotation-fix.py
+ExecStart=/usr/local/bin/minibook-rotation-fix.py
 Restart=on-failure
 RestartSec=3
 

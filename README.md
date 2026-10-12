@@ -108,10 +108,13 @@ to come from the kernel rather than from firmware that never set it.
    which is also what raises the on-screen keyboard.
 2. **Landscape after unfolding.** On leaving tablet mode mutter resets the
    built-in panel to the DRM panel-orientation default, which on this panel is
-   portrait, so the desktop would stay rotated. The user daemon in
-   [files/minibook-rotation-fix.py](files/minibook-rotation-fix.py) reapplies
-   landscape whenever the switch is off and does nothing while it is on, so
-   GNOME's own auto-rotation is untouched in tablet and tent mode.
+   portrait, so the desktop would stay rotated. [files/minibook-rotation-fix.py](files/minibook-rotation-fix.py)
+   reapplies landscape whenever the switch is off and does nothing while it is
+   on, so GNOME's own auto-rotation is untouched in tablet and tent mode. It
+   runs as a session service, because the compositor it drives lives in the
+   session, but it is installed system-wide so every account gets it without
+   any per-user step. (The hardware half, `iio-sensor-proxy`, is a system
+   daemon already.)
 3. **Panel.** [tools/panel_fixes.sh](tools/panel_fixes.sh) reads the running VBT
    from debugfs, patches its pixel clock with
    [tools/vbt_patch.py](tools/vbt_patch.py) (a self-contained port of
@@ -132,8 +135,10 @@ to come from the kernel rather than from firmware that never set it.
 | `/etc/systemd/system/iio-sensor-proxy.service.d/panel.conf` | disables the fork's panel compensation while the kernel supplies the orientation |
 | `/etc/udev/rules.d/70-minibook-rotation-fix.rules` | gives the session user read access to the switch device |
 | SELinux module `minibook_iio_sensor_proxy` | lets the confined service read both i2c accelerometers, DRM and uinput |
-| `~/.local/bin/minibook-rotation-fix.py` | landscape daemon |
-| `~/.config/systemd/user/minibook-rotation-fix.service` | starts it with the session |
+| `/usr/local/bin/minibook-rotation-fix.py` | landscape daemon |
+| `/etc/systemd/user/minibook-rotation-fix.service` | starts it in every session |
+| `/etc/systemd/user/graphical-session.target.wants/` | enables it for **all** users, no per-account setup |
+| `/usr/local/share/minibook/minibook_iio_sensor_proxy.te` | the SELinux policy source, for reference |
 | RPM Fusion release packages | repository holding the Intel media driver |
 | `intel-media-driver`, `libva-utils` | hardware decode driver, and `vainfo` to check it |
 | `<firefox profile>/user.js` | enables VA-API decode in Firefox |

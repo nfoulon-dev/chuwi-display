@@ -46,7 +46,10 @@ readonly UDEV_RULE=/etc/udev/rules.d/70-minibook-rotation-fix.rules
 readonly SELINUX_MODULE=minibook_iio_sensor_proxy
 readonly USER_DAEMON=minibook-rotation-fix.py
 readonly USER_UNIT=minibook-rotation-fix.service
-readonly USER_DATA_DIR=.local/share/minibook
+readonly USER_BIN=/usr/local/bin/minibook-rotation-fix.py
+readonly USER_UNIT_PATH=/etc/systemd/user/minibook-rotation-fix.service
+readonly USER_UNIT_WANTS=/etc/systemd/user/graphical-session.target.wants
+readonly POLICY_DIR=/usr/local/share/minibook
 
 readonly UPSTREAM_REPO=https://github.com/fstanis/chuwi-minibook.git
 readonly BUILD_DEPS=(
@@ -352,24 +355,36 @@ install_selinux_module() {
   restorecon "${BINARY}"
 }
 
-install_user_files() {
-  local user
+remove_per_user_copy() {
   local home
+  local found=0
 
-  user="$(target_user)"
   home="$(target_home)"
-  log "installing the rotation daemon for ${user}"
-  install -d -m 755 -o "${user}" -g "${user}" \
-    "${DESTDIR}${home}/.local/bin" \
-    "${DESTDIR}${home}/.local/share/minibook" \
-    "${DESTDIR}${home}/.config/systemd/user"
-  install -m 755 -o "${user}" -g "${user}" \
-    "${FILES_DIR}/${USER_DAEMON}" "${DESTDIR}${home}/.local/bin/${USER_DAEMON}"
-  install -m 644 -o "${user}" -g "${user}" \
-    "${FILES_DIR}/${USER_UNIT}" "${DESTDIR}${home}/.config/systemd/user/${USER_UNIT}"
-  install -m 644 -o "${user}" -g "${user}" \
-    "${FILES_DIR}/${SELINUX_MODULE}.te" \
-    "${DESTDIR}${home}/${USER_DATA_DIR}/${SELINUX_MODULE}.te"
+  for stale in "${home}/.local/bin/${USER_DAEMON}" \
+    "${home}/.config/systemd/user/${USER_UNIT}" \
+    "${home}/.config/systemd/user/graphical-session.target.wants/${USER_UNIT}" \
+    "${home}/.local/share/minibook"; do
+    if [[ -e "${DESTDIR}${stale}" ]]; then
+      found=1
+    fi
+    rm -rf "${DESTDIR}${stale}"
+  done
+  if [[ "${found}" -eq 1 ]]; then
+    log "removed the old per-user copy in ${home}, it is system-wide now"
+  fi
+}
+
+install_session_files() {
+  log "installing the rotation daemon for every session"
+  install -d -m 755 "${DESTDIR}/usr/local/bin" \
+    "${DESTDIR}$(dirname "${USER_UNIT_PATH}")" \
+    "${DESTDIR}${USER_UNIT_WANTS}" "${DESTDIR}${POLICY_DIR}"
+  install -m 755 "${FILES_DIR}/${USER_DAEMON}" "${DESTDIR}${USER_BIN}"
+  install -m 644 "${FILES_DIR}/${USER_UNIT}" "${DESTDIR}${USER_UNIT_PATH}"
+  install -m 644 "${FILES_DIR}/${SELINUX_MODULE}.te" \
+    "${DESTDIR}${POLICY_DIR}/${SELINUX_MODULE}.te"
+  ln -sfn "../${USER_UNIT}" "${DESTDIR}${USER_UNIT_WANTS}/${USER_UNIT}"
+  remove_per_user_copy
 }
 
 reload_services() {
@@ -391,11 +406,12 @@ reload_services() {
   systemctl enable iio-sensor-proxy
   systemctl restart iio-sensor-proxy
   if [[ "${user}" == "root" ]]; then
-    warn "no desktop user to run ${USER_UNIT} for, skipping the rotation daemon"
+    warn "no desktop user to restart ${USER_UNIT} for, it will start with the"
+    warn "next graphical session"
     return
   fi
   sudo -u "${user}" XDG_RUNTIME_DIR="${runtime}" systemctl --user daemon-reload
-  sudo -u "${user}" XDG_RUNTIME_DIR="${runtime}" systemctl --user enable --now \
+  sudo -u "${user}" XDG_RUNTIME_DIR="${runtime}" systemctl --user restart \
     "${USER_UNIT}"
 }
 
@@ -521,7 +537,7 @@ main() {
   fi
   install_system_files "${binary}"
   install_selinux_module
-  install_user_files
+  install_session_files
   reload_services
   health_check
   install_vaapi

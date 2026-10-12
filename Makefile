@@ -18,7 +18,7 @@ test:
 	rm -rf /tmp/chuwi-fold-test
 	IIO_BINARY="$$(pwd)/files/minibook-rotation-fix.py" \
 		DESTDIR=/tmp/chuwi-fold-test ./install
-	find /tmp/chuwi-fold-test -type f | sort
+	find /tmp/chuwi-fold-test -type f -o -type l | sort | sed "s|/tmp/chuwi-fold-test||"
 	rm -rf /tmp/chuwi-fold-test
 
 clean:
