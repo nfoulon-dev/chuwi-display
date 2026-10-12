@@ -1,7 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: 0BSD
 #
-# Remove what ./install added and put the distribution's iio-sensor-proxy back.
+# Remove what ./install added: the fold stack, and the panel fixes unless
+# --keep-panel-fixes is given. Puts the distribution's iio-sensor-proxy back.
 
 set -euo pipefail
 
@@ -17,8 +18,14 @@ readonly USER_DAEMON=minibook-rotation-fix.py
 readonly USER_UNIT=minibook-rotation-fix.service
 readonly USER_DATA_DIR=.local/share/minibook
 
+WITH_PANEL_FIXES=1
+
 log() { echo "==> $*"; }
 warn() { echo "Warning: $*" >&2; }
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
 
 target_user() {
   echo "${SUDO_USER:-$(id -un)}"
@@ -114,12 +121,50 @@ restore_package() {
   fi
 }
 
+usage() {
+  cat <<EOF
+Usage: ./uninstall [--keep-panel-fixes]
+
+  --keep-panel-fixes  leave the VBT patch, kernel arguments and boot settings
+                      alone, and only remove the fold / tablet-mode half
+EOF
+  exit 0
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --keep-panel-fixes)
+      WITH_PANEL_FIXES=0
+      shift
+      ;;
+    -h | --help)
+      usage
+      ;;
+    *)
+      die "unknown option: $1"
+      ;;
+    esac
+  done
+}
+
+revert_panel_fixes() {
+  if [[ "${WITH_PANEL_FIXES}" -eq 0 ]]; then
+    log "keeping the panel fixes (--keep-panel-fixes)"
+    return
+  fi
+  "${SCRIPT_DIR}/tools/panel_fixes.sh" --revert \
+    || warn "could not revert the panel fixes, run tools/panel_fixes.sh --revert"
+}
+
 main() {
+  parse_args "$@"
   elevate "$@"
   stop_user_service
   remove_system_files
   remove_selinux_module
   remove_user_files
+  revert_panel_fixes
   restore_package
   log "done, keyboard and touchpad are no longer affected by folding"
 }

@@ -1,15 +1,19 @@
 #!/bin/bash
 # SPDX-License-Identifier: 0BSD
 #
-# Install the CHUWI MiniBook X fold / tablet-mode stack on Fedora.
+# Install the CHUWI MiniBook X setup on Fedora.
 #
-# Two halves:
+# Two halves, and the fold feature needs the panel half to look right, so this
+# installs both:
 #   1. a forked iio-sensor-proxy carrying a dual-accelerometer hinge-angle
 #      driver. Past 185 degrees of hinge it reports SW_TABLET_MODE, and
 #      libinput then suspends the internal keyboard and touchpad.
 #   2. a small user daemon that puts the panel back in landscape when the lid
 #      is unfolded, because mutter resets the built-in panel to the DRM
 #      panel-orientation default whenever tablet mode turns off.
+#
+# The panel half lives in tools/panel_fixes.sh and runs first, since it decides
+# how the sensor half must report its orientation.
 #
 # Usage: ./install            (elevates itself with sudo)
 #        DESTDIR=/tmp/x ./install   install into a prefix, no system changes
@@ -27,6 +31,10 @@ readonly PATCHES_DIR="${SCRIPT_DIR}/patches"
 readonly DESTDIR="${DESTDIR:-}"
 readonly IIO_BINARY="${IIO_BINARY:-}"
 BUILD_BINARY=""
+
+PANEL_HZ="${PANEL_HZ:-90}"
+WITH_PANEL_FIXES=1
+KEEP_GRUB_MENU=0
 
 readonly BINARY=/usr/local/libexec/iio-sensor-proxy
 readonly SYSTEM_UNIT=/etc/systemd/system/iio-sensor-proxy.service
@@ -203,8 +211,30 @@ build_binary() {
   BUILD_BINARY="${binary}"
 }
 
-config_has_kernel_arg() {
-  grep -q 'panel_orientation=right_side_up' /proc/cmdline
+panel_args_configured() {
+  if [[ -n "${DESTDIR}" ]]; then
+    grep -q 'panel_orientation=right_side_up' /proc/cmdline
+    return
+  fi
+  "${SCRIPT_DIR}/tools/panel_fixes.sh" --check >/dev/null 2>&1
+}
+
+install_panel_fixes() {
+  local panel_options=()
+
+  if [[ -n "${DESTDIR}" ]]; then
+    log "DESTDIR set, skipping the panel fixes"
+    return
+  fi
+  if [[ "${WITH_PANEL_FIXES}" -eq 0 ]]; then
+    log "panel fixes disabled with --no-panel-fixes"
+    return
+  fi
+  if [[ "${KEEP_GRUB_MENU}" -ne 0 ]]; then
+    panel_options+=(--keep-grub-menu)
+  fi
+  "${SCRIPT_DIR}/tools/panel_fixes.sh" --hz "${PANEL_HZ}" \
+    ${panel_options[@]+"${panel_options[@]}"}
 }
 
 install_system_files() {
@@ -225,12 +255,16 @@ install_system_files() {
     "${DESTDIR}${UDEV_RULE}"
 
   install -d -m 755 "${DESTDIR}$(dirname "${DROPIN}")"
-  if config_has_kernel_arg; then
-    log "panel_orientation kernel argument found, disabling double rotation"
+  if panel_args_configured; then
+    log "panel orientation is handled by the kernel, disabling the fork's own"
+    log "panel compensation to avoid rotating the output twice"
     install -m 644 "${FILES_DIR}/panel.conf" "${DESTDIR}${DROPIN}"
+    if ! grep -q 'panel_orientation=right_side_up' /proc/cmdline; then
+      log "that takes effect after the reboot"
+    fi
   else
-    warn "no panel_orientation=right_side_up in /proc/cmdline: the fork's own"
-    warn "panel compensation is kept, so no double rotation can happen"
+    warn "the kernel is not supplying the panel orientation yet, keeping the"
+    warn "fork's own compensation so the output is not rotated twice"
     rm -f "${DESTDIR}${DROPIN}"
   fi
 }
@@ -346,21 +380,71 @@ summary() {
   echo "pointer should stop working. Unfold to get them back, with the screen"
   echo "returning to landscape."
   echo
-  if ! config_has_kernel_arg; then
-    warn "this machine has no panel_orientation=right_side_up kernel argument,"
-    warn "so the panel fixes from the chuwi-minibook repository are probably not"
-    warn "applied yet; see GUIDE.md there."
+  if ! grep -q 'panel_orientation=right_side_up' /proc/cmdline; then
+    if panel_args_configured; then
+      log "reboot to finish: the panel fixes are staged but not active yet"
+    else
+      warn "the panel fixes are not applied, so the built-in display will not be"
+      warn "oriented correctly; re-run without --no-panel-fixes once debugfs and"
+      warn "grubby are available"
+    fi
   fi
+}
+
+usage() {
+  cat <<EOF
+Usage: ./install [--hz N] [--keep-grub-menu] [--no-panel-fixes]
+
+  --hz N             panel refresh rate to patch into the VBT (default ${PANEL_HZ})
+  --keep-grub-menu   do not hide the boot menu (its text cannot be rotated)
+  --no-panel-fixes   install only the fold stack, leave the panel alone
+
+Environment:
+  CHUWI_MINIBOOK  existing checkout of fstanis/chuwi-minibook to use
+  IIO_BINARY      prebuilt iio-sensor-proxy binary, skip the source and build
+  DESTDIR         install into a prefix, make no system changes
+EOF
+  exit 0
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --hz)
+      if [[ $# -lt 2 ]]; then
+        die "--hz needs a value"
+      fi
+      PANEL_HZ="$2"
+      shift 2
+      ;;
+    --keep-grub-menu)
+      KEEP_GRUB_MENU=1
+      shift
+      ;;
+    --no-panel-fixes)
+      WITH_PANEL_FIXES=0
+      shift
+      ;;
+    -h | --help)
+      usage
+      ;;
+    *)
+      die "unknown option: $1"
+      ;;
+    esac
+  done
 }
 
 main() {
   local binary
 
+  parse_args "$@"
   elevate "$@"
   require_fedora
   install_build_deps
   fetch_source
   apply_patches
+  install_panel_fixes
   if [[ -n "${IIO_BINARY}" ]]; then
     binary="${IIO_BINARY}"
   else
