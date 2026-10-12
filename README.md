@@ -69,6 +69,35 @@ your own checkout instead of the vendored source (the driver
 skip the source and build, `DESTDIR=/tmp/x` to install into a prefix and make no
 system changes.
 
+## After a reinstall
+
+On a fresh Fedora install, cloning and running `./install` recreates everything
+this setup needs: the sensor fork, the systemd units, the udev rule, the SELinux
+module, the rotation daemon, the patched VBT, the kernel arguments, RPM Fusion
+with the Intel media driver, and the Firefox preferences. Reboot once, then check:
+
+- fold the display past 185 degrees: keyboard and touchpad stop working, come
+  back when unfolded, and the panel is still in landscape
+- login screen, desktop and `Ctrl+Alt+F2` console are upright
+- `vainfo` lists H.264/VP9/AV1 and Settings > Displays offers 90 Hz
+
+Worth remembering:
+
+- **The boot menu is hidden** (`GRUB_TIMEOUT=0`), because GRUB cannot rotate its
+  text. To reveal it temporarily, set `GRUB_TIMEOUT=5` in `/etc/default/grub` and
+  run `sudo grub2-mkconfig -o /boot/grub2/grub.cfg`; `./install --keep-grub-menu`
+  keeps it visible permanently.
+- **Nothing is flashed to firmware.** The VBT patch is a boot-time override, and
+  if the patched VBT is ever missing i915 falls back to the BIOS VBT at 50 Hz, so
+  the machine still boots. `tools/panel_fixes.sh --revert` returns to stock.
+- **Secure Boot stays enabled** -- no out-of-tree modules are involved. The
+  arguments are also written to `/etc/kernel/cmdline`, so kernels installed later
+  inherit them.
+- No DKMS modules are required, and the `iio-sensor-proxy` package files are left
+  untouched (`rpm -V iio-sensor-proxy` stays clean).
+- `mem_sleep_default=deep` on this machine's command line is not part of this
+  setup; decide on a fresh install whether you want classic suspend.
+
 ## What it fetches, and when
 
 By default every run pulls in the latest of everything it depends on, before
