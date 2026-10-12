@@ -36,6 +36,7 @@ PANEL_HZ="${PANEL_HZ:-90}"
 WITH_PANEL_FIXES=1
 WITH_VAAPI=1
 WITH_FIREFOX=1
+WITH_UPDATES=1
 KEEP_GRUB_MENU=0
 
 readonly BINARY=/usr/local/libexec/iio-sensor-proxy
@@ -129,12 +130,14 @@ install_build_deps() {
   if [[ -n "${IIO_BINARY}" ]]; then
     return
   fi
-  if have_build_deps; then
-    log "build dependencies already present"
-    return
+  if [[ "${WITH_UPDATES}" -eq 0 ]]; then
+    if have_build_deps; then
+      log "build dependencies already present"
+      return
+    fi
   fi
-  log "installing build dependencies"
-  dnf install -y "${BUILD_DEPS[@]}"
+  log "installing or updating build dependencies"
+  dnf install -y --refresh "${BUILD_DEPS[@]}"
 }
 
 source_dir() {
@@ -152,7 +155,7 @@ fetch_source() {
   dir="$(source_dir)"
   user="$(target_user)"
   if [[ -d "${dir}/.git" ]]; then
-    log "using existing checkout ${dir}"
+    update_source "${dir}" "${user}"
     return
   fi
   if [[ -n "${IIO_BINARY}" ]]; then
@@ -161,6 +164,26 @@ fetch_source() {
   log "cloning ${UPSTREAM_REPO} to ${dir}"
   install -d -o "${user}" -g "${user}" "$(dirname "${dir}")"
   as_user "${user}" git clone --depth 1 "${UPSTREAM_REPO}" "${dir}"
+}
+
+update_source() {
+  local dir="$1"
+  local user="$2"
+
+  if [[ -n "${IIO_BINARY}" ]]; then
+    return
+  fi
+  if [[ -n "${CHUWI_MINIBOOK:-}" ]]; then
+    log "using the checkout at ${dir} as given, not updating it"
+    return
+  fi
+  if [[ "${WITH_UPDATES}" -eq 0 ]]; then
+    log "using the existing checkout ${dir} (--no-update)"
+    return
+  fi
+  log "updating ${dir} to the latest upstream"
+  as_user "${user}" git -C "${dir}" fetch --depth 1 origin
+  as_user "${user}" git -C "${dir}" reset --hard FETCH_HEAD
 }
 
 apply_patches() {
@@ -177,9 +200,15 @@ apply_patches() {
     if as_user "${user}" git -C "${dir}" apply --check "${patch}" 2>/dev/null; then
       log "applying $(basename "${patch}")"
       as_user "${user}" git -C "${dir}" apply "${patch}"
-    else
-      log "$(basename "${patch}") already applied, skipping"
+      continue
     fi
+    if as_user "${user}" git -C "${dir}" apply --reverse --check "${patch}" 2>/dev/null; then
+      log "$(basename "${patch}") is already applied"
+      continue
+    fi
+    die "cannot apply $(basename "${patch}") to ${dir}: the checkout has
+diverged from upstream. Remove the directory and re-run, or update it yourself
+with 'git -C ${dir} pull --ff-only'."
   done
 }
 
@@ -234,6 +263,9 @@ install_vaapi() {
   fi
   if [[ "${WITH_FIREFOX}" -eq 0 ]]; then
     options+=(--no-firefox)
+  fi
+  if [[ "${WITH_UPDATES}" -eq 0 ]]; then
+    options+=(--no-update)
   fi
   "${SCRIPT_DIR}/tools/vaapi.sh" ${options[@]+"${options[@]}"} \
     || warn "video decode setup failed, playback just stays on the CPU"
@@ -413,13 +445,15 @@ summary() {
 
 usage() {
   cat <<EOF
-Usage: ./install [--hz N] [--keep-grub-menu] [--no-panel-fixes] [--no-vaapi]
+Usage: ./install [--hz N] [--keep-grub-menu] [--no-panel-fixes] [--no-vaapi] [--no-update]
 
   --hz N             panel refresh rate to patch into the VBT (default ${PANEL_HZ})
   --keep-grub-menu   do not hide the boot menu (its text cannot be rotated)
   --no-panel-fixes   install only the fold stack, leave the panel alone
   --no-vaapi         do not set up hardware video decode
   --no-firefox       do not write the Firefox VA-API preferences
+  --no-update        do not fetch the latest upstream source or update the
+                     packages this needs; use what is already installed
 
 Environment:
   CHUWI_MINIBOOK  existing checkout of fstanis/chuwi-minibook to use
@@ -449,6 +483,10 @@ parse_args() {
       ;;
     --no-vaapi)
       WITH_VAAPI=0
+      shift
+      ;;
+    --no-update)
+      WITH_UPDATES=0
       shift
       ;;
     --no-firefox)

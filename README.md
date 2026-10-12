@@ -56,10 +56,33 @@ fold feature works either way.
 | `--no-panel-fixes` | install only the fold half |
 | `--no-vaapi` | do not set up hardware video decode |
 | `--no-firefox` | do not write the Firefox VA-API preferences |
+| `--no-update` | do not fetch the latest source or update the packages this needs |
 
 Environment overrides: `CHUWI_MINIBOOK=/path/to/checkout` to reuse an existing
 clone, `IIO_BINARY=/path/to/iio-sensor-proxy` to skip the source and build,
 `DESTDIR=/tmp/x` to install into a prefix and make no system changes.
+
+## What it fetches, and when
+
+By default every run pulls in the latest of everything it depends on, before
+building anything:
+
+- **Packages**: `dnf install -y --refresh` for the build dependencies, for the
+  RPM Fusion release packages and for `intel-media-driver`. Because `dnf install`
+  upgrades what is already there, these end up at the newest available version,
+  and the RPM Fusion keys stay current. No full `dnf upgrade` is done.
+- **Source**: the installer's own checkout (`~/.local/src/chuwi-minibook`) is
+  fast-forwarded with `git fetch --depth 1` + `git reset --hard FETCH_HEAD`, so
+  upstream driver fixes are picked up. A checkout you point at with
+  `CHUWI_MINIBOOK=/path/to/checkout` is never touched.
+- **Patches** are re-applied after that update. If upstream has changed the file
+  so a patch no longer applies, the install stops with an explanation rather than
+  building an unpatched driver.
+
+What is *not* refreshed: this repository itself, so `git pull` before running to
+get the newest patches, and the Firefox preferences, which are fixed values.
+
+`--no-update` turns all of that off and uses whatever is already on the machine.
 
 ## Why this is needed
 

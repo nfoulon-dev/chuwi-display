@@ -25,6 +25,7 @@ readonly PREFS=(
 
 WITH_DRIVER=1
 WITH_FIREFOX=1
+WITH_UPDATES=1
 
 log() { echo "==> $*"; }
 warn() { echo "Warning: $*" >&2; }
@@ -40,6 +41,7 @@ Usage: sudo $0 [--no-driver] [--no-firefox]
 
   --no-driver    do not touch RPM Fusion or the media driver
   --no-firefox   do not write the Firefox preferences
+  --no-update    do not refresh the packages, use what is installed
   --check        report whether everything is in place, change nothing
 EOF
   exit 0
@@ -130,12 +132,17 @@ show_check() {
 enable_rpm_fusion() {
   local release
 
+  release="$(rpm -E %fedora)"
   if rpm -q rpmfusion-free-release >/dev/null 2>&1 \
     && rpm -q rpmfusion-nonfree-release >/dev/null 2>&1; then
-    log "RPM Fusion is already enabled"
+    if [[ "${WITH_UPDATES}" -eq 0 ]]; then
+      log "RPM Fusion is already enabled"
+      return 0
+    fi
+    log "updating the RPM Fusion release packages"
+    dnf install -y --refresh rpmfusion-free-release rpmfusion-nonfree-release
     return 0
   fi
-  release="$(rpm -E %fedora)"
   log "enabling RPM Fusion (needed for the Intel media driver)"
   dnf install -y \
     "$(printf "${REPO_FREE_URL}" "${release}")" \
@@ -143,13 +150,14 @@ enable_rpm_fusion() {
 }
 
 install_driver() {
-  if driver_installed && command -v vainfo >/dev/null; then
+  if [[ "${WITH_UPDATES}" -eq 0 ]] && driver_installed \
+    && command -v vainfo >/dev/null; then
     log "the Intel media driver is already installed"
     return 0
   fi
   enable_rpm_fusion
-  log "installing ${DRIVER_PACKAGES[*]}"
-  dnf install -y "${DRIVER_PACKAGES[@]}"
+  log "installing or updating ${DRIVER_PACKAGES[*]}"
+  dnf install -y --refresh "${DRIVER_PACKAGES[@]}"
   log "verify with: vainfo"
 }
 
@@ -203,6 +211,10 @@ parse_args() {
       ;;
     --no-firefox)
       WITH_FIREFOX=0
+      shift
+      ;;
+    --no-update)
+      WITH_UPDATES=0
       shift
       ;;
     --check)
