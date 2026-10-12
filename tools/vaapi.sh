@@ -64,10 +64,20 @@ driver_installed() {
   rpm -q intel-media-driver >/dev/null 2>&1
 }
 
+profiles_from_ini() {
+  local base="$1"
+
+  awk -F= '
+    /^\[/ { in_profile = ($0 ~ /^\[Profile/); next }
+    in_profile && /^Path=/ { sub(/^Path=/, ""); print }
+  ' "${base}/profiles.ini" 2>/dev/null
+}
+
 firefox_profiles() {
   local base
   local path
   local home
+  local listed=0
 
   home="$(target_home)"
   base="${FIREFOX_PROFILES_DIR:-${home}/.mozilla/firefox}"
@@ -77,13 +87,20 @@ firefox_profiles() {
   while IFS= read -r path; do
     if [[ -d "${base}/${path}" ]]; then
       echo "${base}/${path}"
+      listed=1
     elif [[ -d "${path}" ]]; then
       echo "${path}"
+      listed=1
     fi
-  done < <(awk -F= '
-    /^\[/ { in_profile = ($0 ~ /^\[Profile/); next }
-    in_profile && /^Path=/ { sub(/^Path=/, ""); print }
-  ' "${base}/profiles.ini" 2>/dev/null)
+  done < <(profiles_from_ini "${base}")
+  if [[ "${listed}" -eq 1 ]]; then
+    return 0
+  fi
+  for path in "${base}"/*/; do
+    if [[ -f "${path}prefs.js" ]]; then
+      echo "${path%/}"
+    fi
+  done
 }
 
 profile_has_prefs() {
