@@ -1,0 +1,3 @@
+# Grant the active session user read access to the MiniBook tablet-mode switch, so
+# ~/.local/bin/minibook-rotation-fix.py can tell whether the device is folded.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="MXC6655 Tablet Mode Control", TAG+="uaccess"

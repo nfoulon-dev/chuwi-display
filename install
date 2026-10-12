@@ -1,0 +1,347 @@
+#!/bin/bash
+# SPDX-License-Identifier: 0BSD
+#
+# Install the CHUWI MiniBook X fold / tablet-mode stack on Fedora.
+#
+# Two halves:
+#   1. a forked iio-sensor-proxy carrying a dual-accelerometer hinge-angle
+#      driver. Past 185 degrees of hinge it reports SW_TABLET_MODE, and
+#      libinput then suspends the internal keyboard and touchpad.
+#   2. a small user daemon that puts the panel back in landscape when the lid
+#      is unfolded, because mutter resets the built-in panel to the DRM
+#      panel-orientation default whenever tablet mode turns off.
+#
+# Usage: ./install            (elevates itself with sudo)
+#        DESTDIR=/tmp/x ./install   install into a prefix, no system changes
+#
+# Environment:
+#   CHUWI_MINIBOOK  existing checkout of fstanis/chuwi-minibook to use
+#   IIO_BINARY      prebuilt iio-sensor-proxy binary, skips source and build
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+readonly FILES_DIR="${SCRIPT_DIR}/files"
+readonly PATCHES_DIR="${SCRIPT_DIR}/patches"
+readonly DESTDIR="${DESTDIR:-}"
+readonly IIO_BINARY="${IIO_BINARY:-}"
+
+readonly BINARY=/usr/local/libexec/iio-sensor-proxy
+readonly SYSTEM_UNIT=/etc/systemd/system/iio-sensor-proxy.service
+readonly DROPIN=/etc/systemd/system/iio-sensor-proxy.service.d/panel.conf
+readonly UDEV_RULE=/etc/udev/rules.d/70-minibook-rotation-fix.rules
+readonly SELINUX_MODULE=minibook_iio_sensor_proxy
+readonly USER_DAEMON=minibook-rotation-fix.py
+readonly USER_UNIT=minibook-rotation-fix.service
+readonly USER_DATA_DIR=.local/share/minibook
+
+readonly UPSTREAM_REPO=https://github.com/fstanis/chuwi-minibook.git
+readonly BUILD_DEPS=(
+  meson ninja-build glib2-devel libdrm-devel polkit-devel systemd-devel
+  libgudev-devel git checkpolicy policycoreutils policycoreutils-python-utils
+)
+
+log() { echo "==> $*"; }
+warn() { echo "Warning: $*" >&2; }
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+target_user() {
+  echo "${SUDO_USER:-$(id -un)}"
+}
+
+target_home() {
+  local user
+  local home
+
+  user="$(target_user)"
+  home="$(getent passwd "${user}" | cut -d: -f6)"
+  if [[ -z "${home}" ]]; then
+    die "cannot determine the home directory of ${user}"
+  fi
+  echo "${home}"
+}
+
+elevate() {
+  if [[ -n "${DESTDIR}" ]]; then
+    log "DESTDIR set, installing into a prefix without elevation"
+    return
+  fi
+  if [[ ${EUID} -eq 0 ]]; then
+    return
+  fi
+  log "elevating with sudo"
+  exec sudo -- "$0" "$@"
+}
+
+require_fedora() {
+  if [[ ! -r /etc/fedora-release ]]; then
+    warn "this installer targets Fedora; continuing anyway"
+  fi
+}
+
+have_build_deps() {
+  local tool
+  local pc
+
+  for tool in meson ninja checkmodule semodule_package semanage restorecon; do
+    if ! command -v "${tool}" >/dev/null; then
+      return 1
+    fi
+  done
+  for pc in glib-2.0 libdrm gudev-1.0 polkit-gobject-1 libsystemd; do
+    if ! pkg-config --exists "${pc}"; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+install_build_deps() {
+  if [[ -n "${IIO_BINARY}" || -n "${DESTDIR}" ]]; then
+    return
+  fi
+  if have_build_deps; then
+    log "build dependencies already present"
+    return
+  fi
+  log "installing build dependencies"
+  dnf install -y "${BUILD_DEPS[@]}"
+}
+
+source_dir() {
+  if [[ -n "${CHUWI_MINIBOOK:-}" ]]; then
+    echo "${CHUWI_MINIBOOK}"
+    return
+  fi
+  echo "$(target_home)/.local/src/chuwi-minibook"
+}
+
+fetch_source() {
+  local dir
+  local user
+
+  dir="$(source_dir)"
+  user="$(target_user)"
+  if [[ -d "${dir}/.git" ]]; then
+    log "using existing checkout ${dir}"
+    return
+  fi
+  if [[ -n "${IIO_BINARY}" ]]; then
+    return
+  fi
+  log "cloning ${UPSTREAM_REPO} to ${dir}"
+  install -d -o "${user}" -g "${user}" "$(dirname "${dir}")"
+  sudo -u "${user}" git clone --depth 1 "${UPSTREAM_REPO}" "${dir}"
+}
+
+apply_patches() {
+  local dir
+  local patch
+  local user
+
+  dir="$(source_dir)"
+  user="$(target_user)"
+  if [[ ! -d "${dir}/.git" ]]; then
+    return
+  fi
+  for patch in "${PATCHES_DIR}"/*.patch; do
+    if sudo -u "${user}" git -C "${dir}" apply --check "${patch}" 2>/dev/null; then
+      log "applying $(basename "${patch}")"
+      sudo -u "${user}" git -C "${dir}" apply "${patch}"
+    else
+      log "$(basename "${patch}") already applied, skipping"
+    fi
+  done
+}
+
+build_binary() {
+  local dir
+  local user
+  local build
+
+  if [[ -n "${IIO_BINARY}" ]]; then
+    echo "${IIO_BINARY}"
+    return
+  fi
+  dir="$(source_dir)/iio-sensor-proxy"
+  user="$(target_user)"
+  build="${dir}/_build"
+  [[ -d "${dir}" ]] || die "no iio-sensor-proxy source in ${dir}"
+  if [[ ! -d "${build}" ]]; then
+    log "configuring the iio-sensor-proxy build"
+    sudo -u "${user}" meson setup "${build}" "${dir}"
+  fi
+  log "building iio-sensor-proxy"
+  sudo -u "${user}" ninja -C "${build}"
+  [[ -x "${build}/src/iio-sensor-proxy" ]] || die "build produced no binary"
+  echo "${build}/src/iio-sensor-proxy"
+}
+
+config_has_kernel_arg() {
+  grep -q 'panel_orientation=right_side_up' /proc/cmdline
+}
+
+install_system_files() {
+  local binary="$1"
+
+  log "installing ${DESTDIR}${BINARY}"
+  install -d -m 755 "${DESTDIR}/usr/local/libexec"
+  install -m 755 "${binary}" "${DESTDIR}${BINARY}"
+
+  log "installing ${DESTDIR}${SYSTEM_UNIT}"
+  install -d -m 755 "${DESTDIR}$(dirname "${SYSTEM_UNIT}")"
+  install -m 644 "${FILES_DIR}/iio-sensor-proxy.service" \
+    "${DESTDIR}${SYSTEM_UNIT}"
+
+  log "installing ${DESTDIR}${UDEV_RULE}"
+  install -d -m 755 "${DESTDIR}$(dirname "${UDEV_RULE}")"
+  install -m 644 "${FILES_DIR}/70-minibook-rotation-fix.rules" \
+    "${DESTDIR}${UDEV_RULE}"
+
+  install -d -m 755 "${DESTDIR}$(dirname "${DROPIN}")"
+  if config_has_kernel_arg; then
+    log "panel_orientation kernel argument found, disabling double rotation"
+    install -m 644 "${FILES_DIR}/panel.conf" "${DESTDIR}${DROPIN}"
+  else
+    warn "no panel_orientation=right_side_up in /proc/cmdline: the fork's own"
+    warn "panel compensation is kept, so no double rotation can happen"
+    rm -f "${DESTDIR}${DROPIN}"
+  fi
+}
+
+install_selinux_module() {
+  local module_dir
+  local module_pp
+
+  if [[ -n "${DESTDIR}" ]]; then
+    return
+  fi
+  if ! command -v semodule_package >/dev/null; then
+    warn "SELinux tools missing, skipping the policy module"
+    return
+  fi
+  module_dir="$(mktemp -d)"
+  module_pp="${module_dir}/${SELINUX_MODULE}.pp"
+  if ! checkmodule -M -m -o "${module_dir}/${SELINUX_MODULE}.mod" \
+    "${FILES_DIR}/${SELINUX_MODULE}.te"; then
+    warn "cannot compile the SELinux policy (newer policy types?), the service"
+    warn "will run unconfined instead - the feature still works"
+    rm -rf "${module_dir}"
+    return
+  fi
+  semodule_package -o "${module_pp}" -m "${module_dir}/${SELINUX_MODULE}.mod"
+  log "installing the SELinux policy module"
+  semodule -i "${module_pp}"
+  rm -rf "${module_dir}"
+
+  semanage fcontext -a -t iiosensorproxy_exec_t "${BINARY}" 2>/dev/null \
+    || semanage fcontext -m -t iiosensorproxy_exec_t "${BINARY}" \
+    || warn "cannot set the file context of ${BINARY}"
+  restorecon "${BINARY}"
+}
+
+install_user_files() {
+  local user
+  local home
+
+  user="$(target_user)"
+  home="$(target_home)"
+  log "installing the rotation daemon for ${user}"
+  install -d -m 755 -o "${user}" -g "${user}" \
+    "${DESTDIR}${home}/.local/bin" \
+    "${DESTDIR}${home}/.local/share/minibook" \
+    "${DESTDIR}${home}/.config/systemd/user"
+  install -m 755 -o "${user}" -g "${user}" \
+    "${FILES_DIR}/${USER_DAEMON}" "${DESTDIR}${home}/.local/bin/${USER_DAEMON}"
+  install -m 644 -o "${user}" -g "${user}" \
+    "${FILES_DIR}/${USER_UNIT}" "${DESTDIR}${home}/.config/systemd/user/${USER_UNIT}"
+  install -m 644 -o "${user}" -g "${user}" \
+    "${FILES_DIR}/${SELINUX_MODULE}.te" \
+    "${DESTDIR}${home}/${USER_DATA_DIR}/${SELINUX_MODULE}.te"
+}
+
+reload_services() {
+  local user
+  local uid
+  local runtime
+
+  if [[ -n "${DESTDIR}" ]]; then
+    log "DESTDIR set, skipping service reloads"
+    return
+  fi
+  user="$(target_user)"
+  uid="$(id -u "${user}")"
+  runtime="/run/user/${uid}"
+
+  systemctl daemon-reload
+  udevadm control --reload-rules
+  udevadm trigger --subsystem-match=input
+  systemctl enable iio-sensor-proxy
+  systemctl restart iio-sensor-proxy
+  sudo -u "${user}" XDG_RUNTIME_DIR="${runtime}" systemctl --user daemon-reload
+  sudo -u "${user}" XDG_RUNTIME_DIR="${runtime}" systemctl --user enable --now \
+    "${USER_UNIT}"
+}
+
+health_check() {
+  local exe
+  local pid
+
+  if [[ -n "${DESTDIR}" ]]; then
+    return
+  fi
+  sleep 2
+  pid="$(systemctl show -p MainPID --value iio-sensor-proxy)"
+  if [[ "${pid}" == 0 || -z "${pid}" ]]; then
+    die "iio-sensor-proxy is not running, check journalctl -u iio-sensor-proxy"
+  fi
+  exe="$(readlink "/proc/${pid}/exe")"
+  log "iio-sensor-proxy running from ${exe}"
+  if [[ "${exe}" != "${BINARY}" ]]; then
+    die "the service is running ${exe} instead of ${BINARY}"
+  fi
+  if busctl --system get-property net.hadess.SensorProxy \
+    /net/hadess/SensorProxy net.hadess.SensorProxy AccelerometerOrientation \
+    >/dev/null 2>&1; then
+    log "accelerometer responding over D-Bus"
+  else
+    warn "no accelerometer on D-Bus yet, check journalctl -u iio-sensor-proxy"
+  fi
+}
+
+summary() {
+  log "done"
+  echo
+  echo "Fold the display past 185 degrees: the internal keyboard, touchpad and"
+  echo "pointer should stop working. Unfold to get them back, with the screen"
+  echo "returning to landscape."
+  echo
+  if ! config_has_kernel_arg; then
+    warn "this machine has no panel_orientation=right_side_up kernel argument,"
+    warn "so the panel fixes from the chuwi-minibook repository are probably not"
+    warn "applied yet; see GUIDE.md there."
+  fi
+}
+
+main() {
+  local binary
+
+  elevate "$@"
+  require_fedora
+  install_build_deps
+  fetch_source
+  apply_patches
+  binary="$(build_binary)"
+  install_system_files "${binary}"
+  install_selinux_module
+  install_user_files
+  reload_services
+  health_check
+  summary
+}
+
+main "$@"

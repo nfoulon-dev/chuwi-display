@@ -1,0 +1,66 @@
+From 0669be8a7b9476a17103879cc0ece4c101efacdc Mon Sep 17 00:00:00 2001
+From: Nicolas Foulon <100114246+nfoulon-dev@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 14:40:58 +1100
+Subject: [PATCH] iio-sensor-proxy: fix tablet mode on the MiniBook X
+
+Two issues found while installing this on Fedora 44 (GNOME 50, libinput
+1.31.3):
+
+- Report the raw panel orientation when MXC6655_NO_PANEL_COMPENSATION is
+  set. Compositors such as mutter already subtract the DRM panel
+  orientation from the orientation the sensor proxy reports, so our own
+  compensation rotates the output twice; on this 270 degree mounted panel
+  the desktop lands in portrait whenever the orientation is recomputed
+  (notably when the tablet-mode switch turns off).
+
+- Emit tablet mode "off" before destroying the uinput switch. libinput
+  keeps the paired internal keyboard and touchpad suspended when a switch
+  device disappears without an "off" event, so leaving tablet mode that
+  way left the machine without keyboard and touchpad.
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+---
+ iio-sensor-proxy/src/drv-mxc6655-accel.c | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/iio-sensor-proxy/src/drv-mxc6655-accel.c b/iio-sensor-proxy/src/drv-mxc6655-accel.c
+index c2fdc83..000cdd7 100644
+--- a/iio-sensor-proxy/src/drv-mxc6655-accel.c
++++ b/iio-sensor-proxy/src/drv-mxc6655-accel.c
+@@ -260,9 +260,21 @@ read_panel_orientation (void)
+ static gint
+ detect_panel_rotation (void)
+ {
+-	gint drm_orient = read_panel_orientation ();
++	gint drm_orient;
+ 	gint deg;
+ 
++	/* Compositors that already apply the DRM panel orientation themselves
++	 * (e.g. GNOME/mutter reads the connector property) subtract it again
++	 * from the orientation we report, so our own compensation would
++	 * rotate the output twice. MXC6655_NO_PANEL_COMPENSATION=1 turns it
++	 * off and reports the raw panel orientation instead. */
++	if (g_getenv ("MXC6655_NO_PANEL_COMPENSATION") != NULL) {
++		g_message ("MXC6655: panel compensation disabled, reporting raw orientation");
++		return 0;
++	}
++
++	drm_orient = read_panel_orientation ();
++
+ 	if (drm_orient == PANEL_ORIENT_UNKNOWN) {
+ 		g_message ("MXC6655: DRM panel orientation unknown, no compensation");
+ 		return 0;
+@@ -1578,6 +1590,10 @@ mxc6655_close (SensorDevice *sensor_device)
+ 		close (drv_data->lid_fd);
+ 
+ 	if (drv_data->uinput_fd >= 0) {
++		/* Leave tablet mode before the switch disappears: libinput
++		 * keeps the paired keyboard and touchpad suspended when a
++		 * switch device is removed without an "off" event. */
++		emit_tablet_mode (drv_data->uinput_fd, 0);
+ 		ioctl (drv_data->uinput_fd, UI_DEV_DESTROY);
+ 		close (drv_data->uinput_fd);
+ 	}
+-- 
+2.56.0
+

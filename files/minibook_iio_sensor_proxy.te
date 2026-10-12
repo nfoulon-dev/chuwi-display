@@ -1,0 +1,23 @@
+# Permissions needed by the forked iio-sensor-proxy on Fedora: raw access to
+# both MXC6655 accelerometers (i2c), DRM for the panel orientation, uinput for
+# the SW_TABLET_MODE device, and the net_admin capability its sockets use.
+module minibook_iio_sensor_proxy 1.0;
+
+require {
+	type tty_device_t;
+	type event_device_t;
+	type iiosensorproxy_t;
+	type dri_device_t;
+	class chr_file { ioctl open read write };
+	class capability net_admin;
+}
+
+
+allow iiosensorproxy_t dri_device_t:chr_file { ioctl open read };
+
+allow iiosensorproxy_t event_device_t:chr_file write;
+allow iiosensorproxy_t self:capability net_admin;
+
+allow iiosensorproxy_t tty_device_t:chr_file open;
+
+allow iiosensorproxy_t tty_device_t:chr_file { ioctl read write };

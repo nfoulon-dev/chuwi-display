@@ -1,0 +1,127 @@
+#!/bin/bash
+# SPDX-License-Identifier: 0BSD
+#
+# Remove what ./install added and put the distribution's iio-sensor-proxy back.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+
+readonly BINARY=/usr/local/libexec/iio-sensor-proxy
+readonly SYSTEM_UNIT=/etc/systemd/system/iio-sensor-proxy.service
+readonly DROPIN_DIR=/etc/systemd/system/iio-sensor-proxy.service.d
+readonly UDEV_RULE=/etc/udev/rules.d/70-minibook-rotation-fix.rules
+readonly SELINUX_MODULE=minibook_iio_sensor_proxy
+readonly USER_DAEMON=minibook-rotation-fix.py
+readonly USER_UNIT=minibook-rotation-fix.service
+readonly USER_DATA_DIR=.local/share/minibook
+
+log() { echo "==> $*"; }
+warn() { echo "Warning: $*" >&2; }
+
+target_user() {
+  echo "${SUDO_USER:-$(id -un)}"
+}
+
+target_home() {
+  local user
+  local home
+
+  user="$(target_user)"
+  home="$(getent passwd "${user}" | cut -d: -f6)"
+  if [[ -z "${home}" ]]; then
+    warn "cannot determine the home directory of ${user}, skipping user files"
+  fi
+  echo "${home}"
+}
+
+elevate() {
+  if [[ ${EUID} -eq 0 ]]; then
+    return
+  fi
+  log "elevating with sudo"
+  exec sudo -- "$0" "$@"
+}
+
+stop_user_service() {
+  local user
+  local uid
+  local runtime
+  local home
+
+  user="$(target_user)"
+  home="$(target_home)"
+  uid="$(id -u "${user}")"
+  runtime="/run/user/${uid}"
+  if [[ -z "${home}" || ! -d "${runtime}" ]]; then
+    return
+  fi
+  log "stopping the rotation daemon"
+  sudo -u "${user}" XDG_RUNTIME_DIR="${runtime}" systemctl --user disable --now \
+    "${USER_UNIT}" \
+    || warn "could not stop ${USER_UNIT}"
+}
+
+remove_system_files() {
+  log "removing system files"
+  rm -f "${SYSTEM_UNIT}"
+  rm -f "${DROPIN_DIR}/panel.conf"
+  rmdir "${DROPIN_DIR}" 2>/dev/null || true
+  rm -f "${UDEV_RULE}"
+  rm -f "${BINARY}"
+  rmdir /usr/local/libexec 2>/dev/null || true
+}
+
+remove_selinux_module() {
+  if ! command -v semodule >/dev/null; then
+    return
+  fi
+  log "removing the SELinux policy module"
+  semodule -r "${SELINUX_MODULE}" 2>/dev/null || true
+  semanage fcontext -d "${BINARY}" 2>/dev/null || true
+}
+
+remove_user_files() {
+  local home
+
+  home="$(target_home)"
+  if [[ -z "${home}" ]]; then
+    return
+  fi
+  log "removing user files"
+  rm -f "${home}/.local/bin/${USER_DAEMON}"
+  rm -f "${home}/.config/systemd/user/${USER_UNIT}"
+  rm -rf "${home}/${USER_DATA_DIR}"
+}
+
+restore_package() {
+  local pid
+  local exe
+
+  log "restoring the distribution's iio-sensor-proxy"
+  dnf reinstall -y iio-sensor-proxy \
+    || warn "cannot reinstall iio-sensor-proxy, run it yourself if the fork"
+  systemctl daemon-reload
+  udevadm control --reload-rules
+  systemctl restart iio-sensor-proxy || warn "cannot restart iio-sensor-proxy"
+  sleep 2
+  pid="$(systemctl show -p MainPID --value iio-sensor-proxy)"
+  exe="$(readlink "/proc/${pid}/exe" 2>/dev/null || true)"
+  log "iio-sensor-proxy running from ${exe}"
+  if [[ "${exe}" == "${BINARY}" ]]; then
+    warn "the service is still running the fork"
+  fi
+}
+
+main() {
+  elevate "$@"
+  stop_user_service
+  remove_system_files
+  remove_selinux_module
+  remove_user_files
+  restore_package
+  log "done, keyboard and touchpad are no longer affected by folding"
+}
+
+main "$@"
