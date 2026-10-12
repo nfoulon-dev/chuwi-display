@@ -26,6 +26,7 @@ readonly FILES_DIR="${SCRIPT_DIR}/files"
 readonly PATCHES_DIR="${SCRIPT_DIR}/patches"
 readonly DESTDIR="${DESTDIR:-}"
 readonly IIO_BINARY="${IIO_BINARY:-}"
+BUILD_BINARY=""
 
 readonly BINARY=/usr/local/libexec/iio-sensor-proxy
 readonly SYSTEM_UNIT=/etc/systemd/system/iio-sensor-proxy.service
@@ -39,7 +40,9 @@ readonly USER_DATA_DIR=.local/share/minibook
 readonly UPSTREAM_REPO=https://github.com/fstanis/chuwi-minibook.git
 readonly BUILD_DEPS=(
   meson ninja-build glib2-devel libdrm-devel polkit-devel systemd-devel
-  libgudev-devel git checkpolicy policycoreutils policycoreutils-python-utils
+  libgudev-devel pkgconf-pkg-config gcc systemd git checkpolicy
+  policycoreutils
+  policycoreutils-python-utils
 )
 
 log() { echo "==> $*"; }
@@ -47,6 +50,17 @@ warn() { echo "Warning: $*" >&2; }
 die() {
   echo "Error: $*" >&2
   exit 1
+}
+
+as_user() {
+  local user="$1"
+
+  shift
+  if [[ "${user}" == "root" ]]; then
+    "$@"
+  else
+    sudo -u "${user}" "$@"
+  fi
 }
 
 target_user() {
@@ -92,7 +106,8 @@ have_build_deps() {
       return 1
     fi
   done
-  for pc in glib-2.0 libdrm gudev-1.0 polkit-gobject-1 libsystemd; do
+  for pc in glib-2.0 libdrm gudev-1.0 polkit-gobject-1 libsystemd \
+    systemd udev; do
     if ! pkg-config --exists "${pc}"; then
       return 1
     fi
@@ -101,7 +116,7 @@ have_build_deps() {
 }
 
 install_build_deps() {
-  if [[ -n "${IIO_BINARY}" || -n "${DESTDIR}" ]]; then
+  if [[ -n "${IIO_BINARY}" ]]; then
     return
   fi
   if have_build_deps; then
@@ -135,7 +150,7 @@ fetch_source() {
   fi
   log "cloning ${UPSTREAM_REPO} to ${dir}"
   install -d -o "${user}" -g "${user}" "$(dirname "${dir}")"
-  sudo -u "${user}" git clone --depth 1 "${UPSTREAM_REPO}" "${dir}"
+  as_user "${user}" git clone --depth 1 "${UPSTREAM_REPO}" "${dir}"
 }
 
 apply_patches() {
@@ -149,9 +164,9 @@ apply_patches() {
     return
   fi
   for patch in "${PATCHES_DIR}"/*.patch; do
-    if sudo -u "${user}" git -C "${dir}" apply --check "${patch}" 2>/dev/null; then
+    if as_user "${user}" git -C "${dir}" apply --check "${patch}" 2>/dev/null; then
       log "applying $(basename "${patch}")"
-      sudo -u "${user}" git -C "${dir}" apply "${patch}"
+      as_user "${user}" git -C "${dir}" apply "${patch}"
     else
       log "$(basename "${patch}") already applied, skipping"
     fi
@@ -162,23 +177,30 @@ build_binary() {
   local dir
   local user
   local build
+  local binary
 
-  if [[ -n "${IIO_BINARY}" ]]; then
-    echo "${IIO_BINARY}"
-    return
-  fi
   dir="$(source_dir)/iio-sensor-proxy"
   user="$(target_user)"
   build="${dir}/_build"
-  [[ -d "${dir}" ]] || die "no iio-sensor-proxy source in ${dir}"
-  if [[ ! -d "${build}" ]]; then
-    log "configuring the iio-sensor-proxy build"
-    sudo -u "${user}" meson setup "${build}" "${dir}"
+  binary="${build}/src/iio-sensor-proxy"
+  if [[ ! -d "${dir}" ]]; then
+    die "no iio-sensor-proxy source in ${dir}"
+  fi
+  if [[ ! -f "${build}/build.ninja" ]]; then
+    log "configuring the iio-sensor-proxy build in ${build}"
+    rm -rf "${build}"
+    if ! as_user "${user}" meson setup "${build}" "${dir}"; then
+      die "meson setup failed, see ${build}/meson-logs/meson-log.txt"
+    fi
   fi
   log "building iio-sensor-proxy"
-  sudo -u "${user}" ninja -C "${build}"
-  [[ -x "${build}/src/iio-sensor-proxy" ]] || die "build produced no binary"
-  echo "${build}/src/iio-sensor-proxy"
+  if ! as_user "${user}" ninja -C "${build}"; then
+    die "building iio-sensor-proxy failed"
+  fi
+  if [[ ! -x "${binary}" ]]; then
+    die "the build produced no binary"
+  fi
+  BUILD_BINARY="${binary}"
 }
 
 config_has_kernel_arg() {
@@ -282,6 +304,10 @@ reload_services() {
   udevadm trigger --subsystem-match=input
   systemctl enable iio-sensor-proxy
   systemctl restart iio-sensor-proxy
+  if [[ "${user}" == "root" ]]; then
+    warn "no desktop user to run ${USER_UNIT} for, skipping the rotation daemon"
+    return
+  fi
   sudo -u "${user}" XDG_RUNTIME_DIR="${runtime}" systemctl --user daemon-reload
   sudo -u "${user}" XDG_RUNTIME_DIR="${runtime}" systemctl --user enable --now \
     "${USER_UNIT}"
@@ -335,7 +361,12 @@ main() {
   install_build_deps
   fetch_source
   apply_patches
-  binary="$(build_binary)"
+  if [[ -n "${IIO_BINARY}" ]]; then
+    binary="${IIO_BINARY}"
+  else
+    build_binary
+    binary="${BUILD_BINARY}"
+  fi
   install_system_files "${binary}"
   install_selinux_module
   install_user_files
