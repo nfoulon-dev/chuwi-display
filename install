@@ -295,9 +295,13 @@ install_panel_fixes() {
 install_system_files() {
   local binary="$1"
 
-  log "installing ${DESTDIR}${BINARY}"
   install -d -m 755 "${DESTDIR}/usr/local/libexec"
-  install -m 755 "${binary}" "${DESTDIR}${BINARY}"
+  if [[ "$(readlink -f "${binary}")" == "$(readlink -f "${DESTDIR}${BINARY}")" ]]; then
+    log "${DESTDIR}${BINARY} is already in place"
+  else
+    log "installing ${DESTDIR}${BINARY}"
+    install -m 755 "${binary}" "${DESTDIR}${BINARY}"
+  fi
 
   log "installing ${DESTDIR}${SYSTEM_UNIT}"
   install -d -m 755 "${DESTDIR}$(dirname "${SYSTEM_UNIT}")"
